@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: >-
+  If you use this code, please cite the Adver-City paper whose dataset methodology it follows,
+  and the CARLA simulator.
+title: CARLA Adverse-Weather Depth Dataset
+abstract: >-
+  Generation code for a multi-town, multi-weather monocular-depth dataset recorded in CARLA 0.9.12,
+  providing four camera views per frame with semantic labels, sky masks, and LiDAR-projected sparse
+  and semi-dense depth. The sensor rig and weather parameters follow the methodology of Adver-City.
+references:
+  - type: article
+    title: >-
+      Adver-City: Open-Source Multi-Modal Dataset for Collaborative Perception Under Adverse
+      Weather Conditions
+    authors:
+      - family-names: Karvat
+        given-names: Mateus
+      - family-names: Givigi
+        given-names: Sidney
+    year: 2024
+    journal: arXiv preprint arXiv:2410.06380
+    url: https://arxiv.org/abs/2410.06380
+  - type: conference-paper
+    title: "CARLA: An Open Urban Driving Simulator"
+    authors:
+      - family-names: Dosovitskiy
+        given-names: Alexey
+      - family-names: Ros
+        given-names: German
+      - family-names: Codevilla
+        given-names: Felipe
+      - family-names: Lopez
+        given-names: Antonio
+      - family-names: Koltun
+        given-names: Vladlen
+    year: 2017
+    collection-title: Proceedings of the 1st Annual Conference on Robot Learning

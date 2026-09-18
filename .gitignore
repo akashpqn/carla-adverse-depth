@@ -1,0 +1,11 @@
+# Captured data - kept out of version control
+dataset/
+output/
+*.log
+
+# Previews and scratch images
+peek*.png
+sun_*.png
+
+__pycache__/
+*.pyc
