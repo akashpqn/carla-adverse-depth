@@ -36,18 +36,30 @@ Depth is stored in centimetres rather than millimetres so that values up to 655 
 millimetres overflow past 65.5 m, which ordinary street scenes exceed. Pass `--save-depth-npy` to
 additionally write float32 metre-valued `.npy` depth (roughly 8 MB per image, so off by default).
 
-Depth is clipped at `--max-depth`, 200 m by default, matching the LiDAR's own configured range so
-nothing the sensor reports is discarded. Anything past it, and every unmeasured pixel, is stored as 0.
+Each depth source carries its own range limit, and **anything past it is stored as 0** - the same
+"no measurement" value as sky and the gaps between scan lines. Out-of-range pixels are never clamped
+to the limit, which would write a distance that was never measured and teach a network that every
+far surface sits at exactly that number; KITTI, DrivingStereo and nuScenes all leave such pixels
+empty and mask them out of the loss.
+
+| Source | Limit | Why |
+| --- | --- | --- |
+| `sparse_depth_u16/`, `semi_dense_depth_u16/` | `--max-depth`, 200 m | The LiDAR's own configured range, so nothing the sensor reports is discarded |
+| `carla_depth_u16/` | `--camera-max-depth`, 655.35 m | A z-buffer is not range-limited; 655.35 m is the ceiling of the 16-bit centimetre encoding, the convention Virtual KITTI 2 uses for synthetic depth |
+
+Cap the range at training time to suit the task rather than losing it here - KITTI and nuScenes
+evaluate depth to 80 m, DDAD to 200 m.
 
 The `_u16` maps are the training data, and an ordinary image viewer renders them nearly black: it
 stretches the full 0-65535 range while a 200 m scene only reaches 20000, and most of the frame is 0.
 That is expected. Each one therefore also gets a colour preview in the matching `_depth_view/` folder
-- turbo on a square-root scale, near in blue through to far in red, black for no measurement. Pass
+- turbo on a square-root scale, near in blue through to far in red, black for no measurement, every
+source sharing one `--depth-view-max` scale (200 m) so the previews stay comparable. Pass
 `--no-depth-view` to skip them, or render any depth PNG on demand:
 
 ```powershell
-python scriptsiew_depth.py <depth.png> --max-depth 200
-python scriptsiew_depth.py <folder> --all          # a whole folder
+python scripts/view_depth.py <depth.png> --max-depth 200
+python scripts/view_depth.py <folder> --all          # a whole folder
 ```
 
 `semantic_label/` is raw class ids (0-22) in every channel, so it looks almost black too - that is
@@ -111,7 +123,8 @@ Start nothing by hand — the run scripts launch and supervise CARLA themselves.
 ```
 
 Requirements: CARLA 0.9.12 (packaged build) and a Python 3.7 environment with the matching `carla`
-wheel, plus `numpy` and `Pillow`. Set `DEFAULT_CARLA_ROOT` in
+wheel, plus `numpy` and `Pillow`. `matplotlib` is optional: it supplies the turbo colour map for the
+depth previews, which fall back to a plain red-to-blue ramp without it. Set `DEFAULT_CARLA_ROOT` in
 `scripts/generate_adver_city_depth_dataset.py` and `$carlaExe` / `$py` in
 `scripts/run_supervised_capture.ps1` to your own paths.
 

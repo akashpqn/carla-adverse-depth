@@ -445,15 +445,22 @@ def colourise_depth(depth_m, max_depth):
     return out
 
 
-def save_depth(root, subdir_npy, subdir_png, stem, depth_m, max_depth, save_npy, subdir_view=None):
+def save_depth(root, subdir_npy, subdir_png, stem, depth_m, max_depth, save_npy, subdir_view=None,
+               view_max=None):
+    # Anything past the range limit becomes 0 - "no measurement", the same value as sky and the gaps
+    # between scan lines - rather than being clamped to the limit. Clamping writes a distance that was
+    # never measured: a 500m building and a 201m building would both be labelled 200.00m, and the
+    # network would be taught that exact number for every far surface. Real depth datasets (KITTI,
+    # DrivingStereo, nuScenes) leave out-of-range pixels empty and mask them out of the loss.
+    depth_m = np.where(depth_m > max_depth, 0.0, depth_m)
     if save_npy:
         np.save(os.path.join(root, subdir_npy, stem + ".npy"), depth_m.astype(np.float32))
     depth_units = np.clip(
-        depth_m * DEPTH_PNG_UNITS_PER_METER, 0, min(max_depth * DEPTH_PNG_UNITS_PER_METER, 65535.0)
+        depth_m * DEPTH_PNG_UNITS_PER_METER, 0, 65535.0
     ).astype(np.uint16)
     Image.fromarray(depth_units).save(os.path.join(root, subdir_png, stem + ".png"))
     if subdir_view:
-        Image.fromarray(colourise_depth(depth_m, max_depth)).save(
+        Image.fromarray(colourise_depth(depth_m, view_max or max_depth)).save(
             os.path.join(root, subdir_view, stem + ".png")
         )
 
@@ -716,7 +723,19 @@ def main():
         "each .npy is ~8MB uncompressed at 1920x1080 x2 per camera, dwarfing every other output file; the "
         "u16 PNG already has 1cm precision and compresses well since most of the frame is zero.",
     )
-    parser.add_argument("--max-depth", default=120.0, type=float)
+    # 200 m matches the LiDAR's own configured range (Adver-City's value), so nothing the sensor
+    # reports is thrown away, and the projection drops returns past it rather than piling them up.
+    parser.add_argument("--max-depth", default=200.0, type=float,
+                        help="range limit for the LiDAR-derived depth maps; past it, pixels are 0")
+    # The depth camera is a z-buffer, not a sensor, so it is not held to the LiDAR's range: it reports
+    # the true distance to the skyline. 655.35 m is the ceiling of the 16-bit centimetre encoding, and
+    # the convention Virtual KITTI 2 uses for exactly this kind of synthetic depth. Cap it at training
+    # time (KITTI and nuScenes evaluate to 80 m, DDAD to 200 m) rather than throwing the range away here.
+    parser.add_argument("--camera-max-depth", default=655.35, type=float,
+                        help="range limit for the dense depth-camera maps; past it, pixels are 0")
+    parser.add_argument("--depth-view-max", default=200.0, type=float,
+                        help="metres mapped to the far end of the colour previews; one scale for every "
+                        "source so the *_depth_view images stay comparable to each other")
     parser.add_argument(
         "--lidar-profile",
         default="clean",
@@ -1023,6 +1042,8 @@ def main():
                 "ego_transform": ego.get_transform().__str__(),
                 "lidar_transform": lidar.get_transform().__str__(),
                 "lidar_profile": args.lidar_profile,
+                "max_depth_lidar_m": args.max_depth,
+                "max_depth_camera_m": args.camera_max_depth,
                 "run_seed": run_seed,
                 "cameras": {},
             }
@@ -1070,19 +1091,21 @@ def main():
                 save_depth(
                     args.out, "sparse_depth_m", "sparse_depth_u16", file_stem, sparse_depth, args.max_depth,
                     args.save_depth_npy, "sparse_depth_view" if args.depth_view else None,
+                    args.depth_view_max,
                 )
                 save_depth(
                     args.out, "semi_dense_depth_m", "semi_dense_depth_u16", file_stem, semi_dense_depth,
                     args.max_depth, args.save_depth_npy,
-                    "semi_dense_depth_view" if args.depth_view else None,
+                    "semi_dense_depth_view" if args.depth_view else None, args.depth_view_max,
                 )
 
                 if depth_data is not None:
                     carla_depth = depth_image_to_meters(depth_data)
                     carla_depth[sky_mask] = 0.0
                     save_depth(
-                        args.out, "carla_depth_m", "carla_depth_u16", file_stem, carla_depth, args.max_depth,
-                        args.save_depth_npy, "carla_depth_view" if args.depth_view else None,
+                        args.out, "carla_depth_m", "carla_depth_u16", file_stem, carla_depth,
+                        args.camera_max_depth, args.save_depth_npy,
+                        "carla_depth_view" if args.depth_view else None, args.depth_view_max,
                     )
 
                 frame_metadata["cameras"][name] = {
