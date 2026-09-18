@@ -20,7 +20,9 @@ Per frame, for each of the four cameras (`front`, `right`, `left`, `back`):
 | `sky_mask/` | 255 where the class is sky, else 0 |
 | `sparse_depth_u16/` | LiDAR projected into the camera, 16-bit PNG, **centimetres** (`value / 100 = metres`) |
 | `semi_dense_depth_u16/` | As above, accumulated over the last 5 LiDAR sweeps, dynamic objects removed |
+| `carla_depth_u16/` | Simulator z-buffer depth, same encoding - dense and pixel-sharp (`--save-carla-depth`) |
 | `confidence/` | 255 = this-sweep LiDAR hit, 128 = accumulated hit, 0 = invalid or sky |
+| `*_depth_view/` | 8-bit colour preview of each depth map above, for looking at rather than training |
 
 Shared per frame:
 
@@ -33,6 +35,23 @@ Shared per frame:
 Depth is stored in centimetres rather than millimetres so that values up to 655 m fit in 16 bits;
 millimetres overflow past 65.5 m, which ordinary street scenes exceed. Pass `--save-depth-npy` to
 additionally write float32 metre-valued `.npy` depth (roughly 8 MB per image, so off by default).
+
+Depth is clipped at `--max-depth`, 200 m by default, matching the LiDAR's own configured range so
+nothing the sensor reports is discarded. Anything past it, and every unmeasured pixel, is stored as 0.
+
+The `_u16` maps are the training data, and an ordinary image viewer renders them nearly black: it
+stretches the full 0-65535 range while a 200 m scene only reaches 20000, and most of the frame is 0.
+That is expected. Each one therefore also gets a colour preview in the matching `_depth_view/` folder
+- turbo on a square-root scale, near in blue through to far in red, black for no measurement. Pass
+`--no-depth-view` to skip them, or render any depth PNG on demand:
+
+```powershell
+python scriptsiew_depth.py <depth.png> --max-depth 200
+python scriptsiew_depth.py <folder> --all          # a whole folder
+```
+
+`semantic_label/` is raw class ids (0-22) in every channel, so it looks almost black too - that is
+the label map, not a picture. `confidence/` is a mask, so it is black with white LiDAR scan lines.
 
 ## Weather presets
 

@@ -166,7 +166,7 @@ def add_carla_python_api(carla_root):
     sys.path.append(os.path.join(python_api, "carla"))
 
 
-def make_dirs(root, save_depth_npy):
+def make_dirs(root, save_depth_npy, depth_view):
     names = [
         "rgb",
         "semantic_label",
@@ -179,6 +179,8 @@ def make_dirs(root, save_depth_npy):
     ]
     if save_depth_npy:
         names += ["sparse_depth_m", "semi_dense_depth_m"]
+    if depth_view:
+        names += ["sparse_depth_view", "semi_dense_depth_view"]
     for name in names:
         os.makedirs(os.path.join(root, name), exist_ok=True)
 
@@ -408,13 +410,52 @@ def project_world_points(world_points, camera_actor, k, width, height, max_depth
 DEPTH_PNG_UNITS_PER_METER = 100.0
 
 
-def save_depth(root, subdir_npy, subdir_png, stem, depth_m, max_depth, save_npy):
+def turbo_lut():
+    """
+    256x3 uint8 colour table, cached. matplotlib's turbo if it is installed, otherwise a red->blue
+    ramp so the previews still render on a bare install.
+    """
+    if turbo_lut.cache is None:
+        try:
+            from matplotlib import cm
+            turbo_lut.cache = (cm.get_cmap("turbo")(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
+        except Exception:
+            ramp = np.linspace(0, 1, 256)
+            turbo_lut.cache = np.stack(
+                [255 * (1 - ramp), 255 * ramp * 0.6, 255 * ramp], axis=1
+            ).astype(np.uint8)
+    return turbo_lut.cache
+
+
+turbo_lut.cache = None
+
+
+def colourise_depth(depth_m, max_depth):
+    """
+    Depth -> an 8-bit RGB image a viewer can actually show. The u16 PNGs hold centimetres, so an
+    ordinary viewer stretches 0..65535 and renders a 200m scene as near-black; this maps depth
+    through turbo on a SQUARE-ROOT scale (most pixels are close, so a linear ramp crushes all the
+    near detail into one colour). Unmeasured pixels stay black: no data, not zero distance.
+    """
+    valid = depth_m > 0
+    scaled = np.sqrt(np.clip(depth_m, 0, max_depth) / max_depth)
+    idx = np.clip((scaled * 255).astype(np.int32), 0, 255)
+    out = np.zeros(depth_m.shape + (3,), dtype=np.uint8)
+    out[valid] = turbo_lut()[idx[valid]]
+    return out
+
+
+def save_depth(root, subdir_npy, subdir_png, stem, depth_m, max_depth, save_npy, subdir_view=None):
     if save_npy:
         np.save(os.path.join(root, subdir_npy, stem + ".npy"), depth_m.astype(np.float32))
     depth_units = np.clip(
         depth_m * DEPTH_PNG_UNITS_PER_METER, 0, min(max_depth * DEPTH_PNG_UNITS_PER_METER, 65535.0)
     ).astype(np.uint16)
     Image.fromarray(depth_units).save(os.path.join(root, subdir_png, stem + ".png"))
+    if subdir_view:
+        Image.fromarray(colourise_depth(depth_m, max_depth)).save(
+            os.path.join(root, subdir_view, stem + ".png")
+        )
 
 
 def save_ply(path, world_points, intensity):
@@ -658,6 +699,15 @@ def main():
     parser.add_argument("--max-stall-ticks", default=300, type=int,
                         help="end the run if the ego stays within --min-move for this many ticks")
     parser.add_argument("--save-carla-depth", action="store_true", help="also save CARLA's ideal z-buffer depth per camera")
+    parser.add_argument(
+        "--no-depth-view",
+        dest="depth_view",
+        action="store_false",
+        help="skip the *_depth_view folders. On by default: each depth map also gets an 8-bit turbo "
+        "colour preview, since the u16 depth PNGs themselves look black in an ordinary image viewer. "
+        "The previews are for looking at - train on the u16 PNGs, which hold the actual centimetres.",
+    )
+    parser.set_defaults(depth_view=True)
     parser.add_argument("--save-ply", action="store_true")
     parser.add_argument(
         "--save-depth-npy",
@@ -675,7 +725,7 @@ def main():
     )
     args = parser.parse_args()
 
-    make_dirs(args.out, args.save_depth_npy)
+    make_dirs(args.out, args.save_depth_npy, args.depth_view)
     # Vary the seed with how many frames are already captured, not just args.seed: this script
     # restarts from scratch (fresh ego/traffic spawn) on every crash-recovery, and a fixed seed would
     # replay the exact same opening seconds of the exact same scenario every single restart - nearly
@@ -697,6 +747,8 @@ def main():
         if args.save_depth_npy:
             os.makedirs(os.path.join(args.out, "carla_depth_m"), exist_ok=True)
         os.makedirs(os.path.join(args.out, "carla_depth_u16"), exist_ok=True)
+        if args.depth_view:
+            os.makedirs(os.path.join(args.out, "carla_depth_view"), exist_ok=True)
 
     active_cameras = [cam for cam in CAMERA_RIG if cam["name"] in args.cameras]
 
@@ -1017,11 +1069,12 @@ def main():
                 Image.fromarray(confidence).save(os.path.join(args.out, "confidence", file_stem + ".png"))
                 save_depth(
                     args.out, "sparse_depth_m", "sparse_depth_u16", file_stem, sparse_depth, args.max_depth,
-                    args.save_depth_npy,
+                    args.save_depth_npy, "sparse_depth_view" if args.depth_view else None,
                 )
                 save_depth(
                     args.out, "semi_dense_depth_m", "semi_dense_depth_u16", file_stem, semi_dense_depth,
                     args.max_depth, args.save_depth_npy,
+                    "semi_dense_depth_view" if args.depth_view else None,
                 )
 
                 if depth_data is not None:
@@ -1029,7 +1082,7 @@ def main():
                     carla_depth[sky_mask] = 0.0
                     save_depth(
                         args.out, "carla_depth_m", "carla_depth_u16", file_stem, carla_depth, args.max_depth,
-                        args.save_depth_npy,
+                        args.save_depth_npy, "carla_depth_view" if args.depth_view else None,
                     )
 
                 frame_metadata["cameras"][name] = {
