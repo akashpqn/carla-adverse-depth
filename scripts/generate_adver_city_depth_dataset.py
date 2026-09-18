@@ -705,6 +705,9 @@ def main():
                         help="metres the ego must travel between saved frames (skips near-duplicates)")
     parser.add_argument("--max-stall-ticks", default=300, type=int,
                         help="end the run if the ego stays within --min-move for this many ticks")
+    parser.add_argument("--max-missed-ticks", default=40, type=int,
+                        help="end the run if this many consecutive ticks deliver no sensor data, which "
+                        "means the simulator has stopped rendering even though it still answers RPC")
     parser.add_argument("--save-carla-depth", action="store_true", help="also save CARLA's ideal z-buffer depth per camera")
     parser.add_argument(
         "--no-depth-view",
@@ -982,6 +985,7 @@ def main():
         saved = 0
         last_saved_pos = None
         stall_ticks = 0
+        missed_streak = 0
         while saved < remaining:
             frame = world.tick()
 
@@ -999,8 +1003,19 @@ def main():
                     missing = True
 
             if missing:
+                missed_streak += 1
                 print("Skipping frame %s because one or more sensors missed the tick." % frame)
+                # A GPU reset kills CARLA's render thread while the server keeps answering RPC, so
+                # ticks still succeed but no sensor ever delivers again: the run would sit here
+                # forever, holding VRAM at idle, and the supervisor's port check would see a healthy
+                # server. Give up so the supervisor can restart CARLA and resume from the frame count.
+                if missed_streak >= args.max_missed_ticks:
+                    raise SystemExit(
+                        "No sensor data for %d consecutive ticks - the simulator is not rendering. "
+                        "Exiting so the run can restart." % missed_streak
+                    )
                 continue
+            missed_streak = 0
 
             ego_pos = ego.get_transform().location
             if last_saved_pos is not None and ego_pos.distance(last_saved_pos) < args.min_move:

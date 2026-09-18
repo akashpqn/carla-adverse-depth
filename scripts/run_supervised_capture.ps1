@@ -15,6 +15,9 @@ param(
     # rig; 25 has been stable.
     [int]$Traffic = 25,
     [int]$Walkers = 10,
+    # Restart if no frame is written for this long. Generous: map loading, traffic spawning and the
+    # warm-up ticks take well over a minute before the first frame of an attempt lands.
+    [int]$NoProgressSeconds = 240,
     # Point these at your own install and Python environment, or pass them in.
     [string]$CarlaRoot = "C:\CARLA_0.9.12\WindowsNoEditor",
     [string]$Python = "$env:USERPROFILE\miniconda3\envs\carla\python.exe"
@@ -98,6 +101,12 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     # A crashed CARLA often lingers behind its error dialog, so check the RPC port, not the process.
     # Require 3 consecutive failed checks (15s) so a momentary hiccup doesn't kill a healthy run.
     $misses = 0
+    # Second watchdog, on output rather than liveness: a GPU reset can leave CARLA answering RPC and
+    # holding its VRAM while its render thread is dead, so ticks succeed but no sensor ever delivers
+    # again and no frame is ever written. The port check above sees a healthy server, so without this
+    # the run would sit there indefinitely at idle GPU.
+    $lastCount = Get-CapturedCount
+    $lastProgress = Get-Date
     while (-not $proc.HasExited) {
         Start-Sleep -Seconds 5
         $alive = $false
@@ -110,6 +119,15 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         if ($alive) { $misses = 0 } else { $misses++ }
         if ($misses -ge 3) {
             Write-Host "[supervisor] CARLA stopped answering - stopping the generator now."
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            break
+        }
+        $count = Get-CapturedCount
+        if ($count -gt $lastCount) {
+            $lastCount = $count
+            $lastProgress = Get-Date
+        } elseif (((Get-Date) - $lastProgress).TotalSeconds -ge $NoProgressSeconds) {
+            Write-Host "[supervisor] No new frames for $NoProgressSeconds s (still $count) - restarting."
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             break
         }
