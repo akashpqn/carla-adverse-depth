@@ -168,6 +168,9 @@ Start nothing by hand — the run scripts launch and supervise CARLA themselves.
 # every town in sequence
 .\scripts\run_multi_town_capture.ps1
 
+# training capture, then the held-out validation capture, unattended
+.\scripts\run_queue.ps1
+
 # a single town/weather pair
 .\scripts\run_supervised_capture.ps1 -Town Town07 -Weather foggy_night -Frames 182 `
     -Out D:\dataset\Town07\foggy_night
@@ -181,6 +184,19 @@ depth previews, which fall back to a plain red-to-blue ramp without it. Set `DEF
 
 Every run is resumable: it counts existing frames in the output folder and captures only the
 shortfall, so re-running after an interruption continues where it stopped.
+
+`run_queue.ps1` chains the two passes that make up the dataset:
+
+| Pass | Output | Frames per weather | Towns |
+| --- | --- | --- | --- |
+| training | `dataset/` | 182 | Town10HD, Town07, Town04 |
+| validation | `dataset_val/` | 60 | Town05 |
+
+The validation pass writes to a separate root deliberately. Loaders discover runs by walking for
+any directory containing `rgb/`, so a held-out town inside the training root is one careless glob
+away from becoming training data - and an evaluation number that quietly became a training number
+looks entirely normal in a report. Validation also needs coverage rather than volume, hence the
+smaller budget.
 
 ## Capture behaviour
 
