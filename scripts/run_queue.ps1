@@ -1,36 +1,47 @@
-# Runs the training capture, then the held-out validation capture, in one unattended queue.
+# Runs every capture pass in order, unattended. Each pass is resumable and skips whatever is
+# already complete, so re-running this after a crash or a reboot simply continues.
 #
-# The two passes differ in more than their town list, which is why they are separate invocations:
-#
-#   training   -> dataset\      182 frames per weather, the towns the model may learn from
-#   validation -> dataset_val\   60 frames per weather, towns it must never see
+#   1. training core      -> dataset\      182 frames/weather   Town10HD, Town07, Town04
+#   2. validation         -> dataset_val\   60 frames/weather   Town05, Town03
+#   3. training extension -> dataset\      182 frames/weather   Town01, then Town02
 #
 # The validation pass writes to a DIFFERENT ROOT on purpose. Dataset loaders discover runs by
 # walking for any directory containing an rgb\ folder, so a held-out town sitting inside the
 # training root is one careless glob away from becoming training data - and an evaluation number
 # that quietly became a training number looks completely normal in a report. A separate root cannot
-# be included by accident.
+# be included by accident. Validation also needs coverage rather than volume, hence 60 frames.
 #
-# Validation needs coverage, not volume: 60 frames across each of the ten weathers samples every
-# condition without spending days of capture on a set nothing trains on.
+# Validation runs before the training extension because Town05 was already part-captured when
+# Town01 and Town02 were added, and finishing the held-out set matters more than widening training.
 #
-# Everything downstream is resumable, so re-running this after a crash or a reboot picks up wherever
-# it stopped and skips whatever is already complete.
+# Town06 is captured by neither: it is reserved for following-distance evaluation (see the README).
 param(
-    [string]$Root = "D:\adver_city_depth_dataset",
+    [string]$Root = $PSScriptRoot,
     [int]$ValidationFramesPerWeather = 60,
-    # Town05, not Town03: Town06 is the held-out set for following-distance work, and Town05 adds an
-    # unseen urban grid with multiple lanes per direction. Town03 stays uncaptured and fully unseen.
-    [string[]]$ValidationTowns = @("Town05")
+    # Town03 has the only tunnel in the release and the densest junctions; Town05 an unseen urban
+    # grid with multiple lanes per direction. Neither may ever enter training.
+    [string[]]$ValidationTowns = @("Town05", "Town03"),
+    [string[]]$ExtraTrainingTowns = @("Town01")
 )
 
 $multiTown = Join-Path $Root "run_multi_town_capture.ps1"
 
-Write-Host "=== [queue] training capture ==="
+Write-Host "=== [queue] 1/3 training core ==="
 & $multiTown
 
-Write-Host "=== [queue] validation capture: $($ValidationTowns -join ', ') at $ValidationFramesPerWeather frames/weather ==="
+Write-Host "=== [queue] 2/3 validation: $($ValidationTowns -join ', ') at $ValidationFramesPerWeather frames/weather ==="
 & $multiTown -Towns $ValidationTowns -FramesPerWeather $ValidationFramesPerWeather `
     -OutRoot (Join-Path $Root "..\dataset_val")
+
+Write-Host "=== [queue] 3/3 training extension: $($ExtraTrainingTowns -join ', ') ==="
+& $multiTown -Towns $ExtraTrainingTowns
+
+# Town02 gets its own invocation with a lighter load. With the four-camera rig at 25 traffic it
+# crashed the simulator during warm-up on every previous attempt, including with zero traffic and
+# zero walkers - so this is a retry, not an expectation. Fewer actors is the one variable left to
+# change; if it still dies, the supervisor gives up after its attempt budget and the queue ends
+# without it, which costs nothing since every other town is already captured.
+Write-Host "=== [queue] 3b/3 training extension: Town02 (retry, reduced load) ==="
+& $multiTown -Towns @("Town02") -Traffic 12 -Walkers 4 -MaxAttemptsPerRun 15
 
 Write-Host "=== [queue] all captures complete ==="

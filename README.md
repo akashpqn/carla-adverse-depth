@@ -133,6 +133,9 @@ ground truth are left untouched, so inputs are degraded while targets stay clean
 | `towns/Town07.ps1` | Town07 | Rural roads |
 | `towns/Town04.ps1` | Town04 | Highway loop with an underpass |
 | `towns/Town06.ps1` | Town06 | Multi-lane highways, open horizons - **held out**, see below |
+| - | Town03 | Roundabout, dense junctions, the only tunnel - **held out** |
+| - | Town01 | Basic T-junction town |
+| - | Town02 | Smaller variant of Town01 - captured on a lighter actor load, see below |
 
 **Town03, Town05 and Town06 are deliberately not captured**, so they remain unseen validation
 splits. Town04's underpass provides covered-road driving, which otherwise exists only in the
@@ -153,9 +156,13 @@ Training on Town06 would leave no unseen map with a highway on it. Town04 stays 
 model still sees freeway geometry, and it is the town that records the 50 deg `front_narrow`
 camera; `towns/Town06.ps1` remains here for capturing the held-out set separately.
 
-Town02 is also excluded: with the four-camera rig it crashed the simulator during warm-up on every
-attempt, including with zero traffic and zero pedestrians, while other towns ran the same
-configuration without issue.
+Town02 is captured last and on a reduced actor load (12 vehicles, 4 pedestrians, a short attempt
+budget): with the four-camera rig at the standard load it crashed the simulator during warm-up on
+every previous attempt, including with zero traffic and zero pedestrians, while other towns ran
+the same configuration without issue. If it fails again the queue simply ends without it.
+
+Town08 and Town09 do not exist in any public CARLA release - the numbering jumps from Town07 to
+Town10, and those two are kept unreleased for Leaderboard evaluation.
 
 ## Usage
 
@@ -189,8 +196,9 @@ shortfall, so re-running after an interruption continues where it stopped.
 
 | Pass | Output | Frames per weather | Towns |
 | --- | --- | --- | --- |
-| training | `dataset/` | 182 | Town10HD, Town07, Town04 |
-| validation | `dataset_val/` | 60 | Town05 |
+| training core | `dataset/` | 182 | Town10HD, Town07, Town04 |
+| validation | `dataset_val/` | 60 | Town05, Town03 |
+| training extension | `dataset/` | 182 | Town01, then Town02 (retry, reduced load) |
 
 The validation pass writes to a separate root deliberately. Loaders discover runs by walking for
 any directory containing `rgb/`, so a held-out town inside the training root is one careless glob
