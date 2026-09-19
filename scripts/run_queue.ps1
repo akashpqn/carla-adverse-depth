@@ -26,6 +26,13 @@ param(
 
 $multiTown = Join-Path $Root "run_multi_town_capture.ps1"
 
+# Each phase is independent: one that fails outright must not cancel the phases after it.
+function Invoke-Phase {
+    param([string]$Label, [hashtable]$Arguments)
+    Write-Host "=== [queue] $Label ==="
+    try { & $multiTown @Arguments } catch { Write-Host "[queue] $Label failed: $($_.Exception.Message)" }
+}
+
 Write-Host "=== [queue] 1/3 training core ==="
 & $multiTown
 

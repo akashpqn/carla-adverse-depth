@@ -63,82 +63,94 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     }
     Write-Host "[supervisor] Attempt $attempt/$MaxAttempts - $have/$Frames frames so far."
 
-    Stop-AllCarla
-    Write-Host "[supervisor] Launching CARLA headless..."
-    Start-Process -FilePath $carlaExe -ArgumentList "-d3d11 -quality-level=Epic -RenderOffscreen -ResX=800 -ResY=600" `
-        -WorkingDirectory $carlaDir | Out-Null
+    try {
+        Stop-AllCarla
+        Write-Host "[supervisor] Launching CARLA headless..."
+        Start-Process -FilePath $carlaExe -ArgumentList "-d3d11 -quality-level=Epic -RenderOffscreen -ResX=800 -ResY=600" `
+            -WorkingDirectory $carlaDir | Out-Null
 
-    $portOpen = $false
-    for ($i = 0; $i -lt 60; $i++) {
-        try {
-            $conn = New-Object System.Net.Sockets.TcpClient
-            $conn.Connect("127.0.0.1", 2000)
-            $conn.Close()
-            $portOpen = $true
-            break
-        } catch { Start-Sleep -Seconds 2 }
-    }
-    if (-not $portOpen) {
-        Write-Host "[supervisor] CARLA never opened port 2000, retrying..."
-        continue
-    }
-    Write-Host "[supervisor] CARLA is up, running generator..."
-
-    $stdout = Join-Path $logDir "capture_attempt$attempt.stdout.log"
-    $stderr = Join-Path $logDir "capture_attempt$attempt.stderr.log"
-    $argList = @(
-        "-u",  # unbuffered: otherwise Python's stdout buffering hides all progress/errors until exit
-        "`"$script`"",
-        "--town", $Town,
-        "--weather", $Weather,
-        "--frames", $Frames,
-        "--width", $Width, "--height", $Height,
-        "--traffic", $Traffic, "--walkers", $Walkers,
-        "--cameras", $Cameras,
-        "--out", "`"$Out`""
-    ) -join " "
-
-    $proc = Start-Process -FilePath $py -ArgumentList $argList -WorkingDirectory $PSScriptRoot `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
-    $null = $proc.Handle  # without touching Handle, ExitCode stays empty for a non -Wait process
-    # Watchdog: when CARLA crashes, the generator otherwise sits out its full RPC timeout (~2 min)
-    # before exiting. Kill it as soon as the CARLA server process is gone so the restart is immediate.
-    # A crashed CARLA often lingers behind its error dialog, so check the RPC port, not the process.
-    # Require 3 consecutive failed checks (15s) so a momentary hiccup doesn't kill a healthy run.
-    $misses = 0
-    # Second watchdog, on output rather than liveness: a GPU reset can leave CARLA answering RPC and
-    # holding its VRAM while its render thread is dead, so ticks succeed but no sensor ever delivers
-    # again and no frame is ever written. The port check above sees a healthy server, so without this
-    # the run would sit there indefinitely at idle GPU.
-    $lastCount = Get-CapturedCount
-    $lastProgress = Get-Date
-    while (-not $proc.HasExited) {
-        Start-Sleep -Seconds 5
-        $alive = $false
-        try {
-            $c = New-Object System.Net.Sockets.TcpClient
-            $c.Connect("127.0.0.1", 2000)
-            $c.Close()
-            $alive = $true
-        } catch {}
-        if ($alive) { $misses = 0 } else { $misses++ }
-        if ($misses -ge 3) {
-            Write-Host "[supervisor] CARLA stopped answering - stopping the generator now."
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            break
+        $portOpen = $false
+        for ($i = 0; $i -lt 60; $i++) {
+            try {
+                $conn = New-Object System.Net.Sockets.TcpClient
+                $conn.Connect("127.0.0.1", 2000)
+                $conn.Close()
+                $portOpen = $true
+                break
+            } catch { Start-Sleep -Seconds 2 }
         }
-        $count = Get-CapturedCount
-        if ($count -gt $lastCount) {
-            $lastCount = $count
-            $lastProgress = Get-Date
-        } elseif (((Get-Date) - $lastProgress).TotalSeconds -ge $NoProgressSeconds) {
-            Write-Host "[supervisor] No new frames for $NoProgressSeconds s (still $count) - restarting."
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            break
+        if (-not $portOpen) {
+            Write-Host "[supervisor] CARLA never opened port 2000, retrying..."
+            continue
         }
+        Write-Host "[supervisor] CARLA is up, running generator..."
+
+        $stdout = Join-Path $logDir "capture_attempt$attempt.stdout.log"
+        $stderr = Join-Path $logDir "capture_attempt$attempt.stderr.log"
+        $argList = @(
+            "-u",  # unbuffered: otherwise Python's stdout buffering hides all progress/errors until exit
+            "`"$script`"",
+            "--town", $Town,
+            "--weather", $Weather,
+            "--frames", $Frames,
+            "--width", $Width, "--height", $Height,
+            "--traffic", $Traffic, "--walkers", $Walkers,
+            "--cameras", $Cameras,
+            "--out", "`"$Out`""
+        ) -join " "
+
+        $proc = Start-Process -FilePath $py -ArgumentList $argList -WorkingDirectory $PSScriptRoot `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+        # Touching Handle is what makes ExitCode readable later for a non -Wait process. It throws if
+        # the process has ALREADY exited, which is routine when the GPU is resetting - the generator
+        # can fault inside a second. With $ErrorActionPreference = Stop that exception used to unwind
+        # the supervisor, the town loop and the whole queue, silently, leaving no error in the log and
+        # the capture simply stopped. Everything below is therefore allowed to fail per attempt.
+        try { $null = $proc.Handle } catch {}
+        # Watchdog: when CARLA crashes, the generator otherwise sits out its full RPC timeout (~2 min)
+        # before exiting. Kill it as soon as the CARLA server process is gone so the restart is immediate.
+        # A crashed CARLA often lingers behind its error dialog, so check the RPC port, not the process.
+        # Require 3 consecutive failed checks (15s) so a momentary hiccup doesn't kill a healthy run.
+        $misses = 0
+        # Second watchdog, on output rather than liveness: a GPU reset can leave CARLA answering RPC and
+        # holding its VRAM while its render thread is dead, so ticks succeed but no sensor ever delivers
+        # again and no frame is ever written. The port check above sees a healthy server, so without this
+        # the run would sit there indefinitely at idle GPU.
+        $lastCount = Get-CapturedCount
+        $lastProgress = Get-Date
+        while (-not $proc.HasExited) {
+            Start-Sleep -Seconds 5
+            $alive = $false
+            try {
+                $c = New-Object System.Net.Sockets.TcpClient
+                $c.Connect("127.0.0.1", 2000)
+                $c.Close()
+                $alive = $true
+            } catch {}
+            if ($alive) { $misses = 0 } else { $misses++ }
+            if ($misses -ge 3) {
+                Write-Host "[supervisor] CARLA stopped answering - stopping the generator now."
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                break
+            }
+            $count = Get-CapturedCount
+            if ($count -gt $lastCount) {
+                $lastCount = $count
+                $lastProgress = Get-Date
+            } elseif (((Get-Date) - $lastProgress).TotalSeconds -ge $NoProgressSeconds) {
+                Write-Host "[supervisor] No new frames for $NoProgressSeconds s (still $count) - restarting."
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                break
+            }
+        }
+        $proc.WaitForExit()
+        Write-Host "[supervisor] Generator exited with code $($proc.ExitCode)."
+    } catch {
+        # Any failure in one attempt - a process handle that vanished, a file lock on the
+        # output drive - costs that attempt and nothing more. Before this, an exception here
+        # unwound every caller above and the capture stopped with an empty log.
+        Write-Host "[supervisor] Attempt $attempt failed: $($_.Exception.Message)"
     }
-    $proc.WaitForExit()
-    Write-Host "[supervisor] Generator exited with code $($proc.ExitCode)."
 }
 
 $have = Get-CapturedCount

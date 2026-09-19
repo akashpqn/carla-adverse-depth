@@ -33,10 +33,18 @@ param(
     [int]$MaxAttemptsPerRun = 100,
     [int]$Traffic = 25,
     [int]$Walkers = 10,
-    # Town04 is the only highway town in training, so it also records the 50 deg forward
-    # camera: long-range depth is what a following-distance task leans on, and the 100 deg
-    # surround rig cannot resolve a lead vehicle at that range. Elsewhere four cameras suffice.
-    [hashtable]$CamerasPerTown = @{ "Town04" = "front,right,left,back,front_narrow" },
+    # Towns that also record the 50 deg forward camera. Town04 for range: it is the highway
+    # town, and the 100 deg surround rig cannot resolve a lead vehicle at highway distances.
+    # Town01 and Town02 have no road above 25 mph, so nothing there needs the reach - they
+    # record it for intrinsic variety instead. A camera-conditioned model that only ever sees
+    # one focal length has no reason to use the conditioning, and Town10HD and Town07 are
+    # already captured at 100 deg only, so these two are where a second focal length can
+    # still be added without recapturing anything.
+    [hashtable]$CamerasPerTown = @{
+        "Town04" = "front,right,left,back,front_narrow"
+        "Town01" = "front,right,left,back,front_narrow"
+        "Town02" = "front,right,left,back,front_narrow"
+    },
     [string]$DefaultCameras = "front,right,left,back"
 )
 
@@ -49,11 +57,17 @@ foreach ($town in $Towns) {
         $cameras = $DefaultCameras
         if ($CamerasPerTown.ContainsKey($town)) { $cameras = $CamerasPerTown[$town] }
         Write-Host "=== [$n/$total] $town / $weather : target $FramesPerWeather frames -> $out ==="
-        & "$PSScriptRoot\run_supervised_capture.ps1" `
-            -Town $town -Weather $weather -Frames $FramesPerWeather `
-            -Width $Width -Height $Height -Out $out -MaxAttempts $MaxAttemptsPerRun `
-            -Traffic $Traffic -Walkers $Walkers `
-            -Cameras $cameras
+        # A town/weather pair that fails outright must not take the rest of the queue with it:
+        # every pair is resumable, so the next pass picks up whatever this one missed.
+        try {
+            & "$PSScriptRoot\run_supervised_capture.ps1" `
+                -Town $town -Weather $weather -Frames $FramesPerWeather `
+                -Width $Width -Height $Height -Out $out -MaxAttempts $MaxAttemptsPerRun `
+                -Traffic $Traffic -Walkers $Walkers `
+                -Cameras $cameras
+        } catch {
+            Write-Host "[queue] $town / $weather failed: $($_.Exception.Message) - continuing."
+        }
     }
 }
 
