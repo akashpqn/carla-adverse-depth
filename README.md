@@ -137,9 +137,10 @@ ground truth are left untouched, so inputs are degraded while targets stay clean
 | - | Town01 | Basic T-junction town |
 | - | Town02 | Smaller variant of Town01 - captured on a lighter actor load, see below |
 
-**Town03, Town05 and Town06 are deliberately not captured**, so they remain unseen validation
-splits. Town04's underpass provides covered-road driving, which otherwise exists only in the
-held-out Town03.
+**Town03, Town05 and Town06 never enter training.** Town03 and Town05 are captured into the
+separate `dataset_val/` root as held-out validation; Town06 is not captured by these scripts at
+all, since it is reserved for following-distance evaluation. Town04's underpass provides
+covered-road driving for training, which otherwise exists only in the held-out Town03.
 
 Town06 is held out specifically for following-distance evaluation. Measured from the OpenDRIVE
 networks, only two towns carry freeway-class road:
