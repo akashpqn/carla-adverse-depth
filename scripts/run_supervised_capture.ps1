@@ -19,6 +19,12 @@ param(
     # resolves 19 px/deg against the 100 deg rig's 9.6, the difference between a lead vehicle
     # at 80 m being 19 px tall and 8 px tall. Extra frames, so it is opt-in per town.
     [string]$Cameras = "front,right,left,back",
+    # Threads the generator uses to write a frame's images while the next one renders. 0 writes
+    # inline. PNG encoding is single-threaded zlib and dominates the per-frame cost - measured at
+    # 12% GPU and 2.2 of 16 cores busy, the two never overlapping - so a small pool cuts the write
+    # stage about 3x. A frame's metadata is still committed only after its own images, so a
+    # resumed run never sees a frame whose files are missing.
+    [int]$SaveWorkers = 0,
     # Restart if no frame is written for this long. Generous: map loading, traffic spawning and the
     # warm-up ticks take well over a minute before the first frame of an attempt lands.
     [int]$NoProgressSeconds = 240,
@@ -96,6 +102,7 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
             "--width", $Width, "--height", $Height,
             "--traffic", $Traffic, "--walkers", $Walkers,
             "--cameras", $Cameras,
+        "--save-workers", $SaveWorkers,
             "--out", "`"$Out`""
         ) -join " "
 

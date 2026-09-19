@@ -45,7 +45,12 @@ param(
         "Town01" = "front,right,left,back,front_narrow"
         "Town02" = "front,right,left,back,front_narrow"
     },
-    [string]$DefaultCameras = "front,right,left,back"
+    [string]$DefaultCameras = "front,right,left,back",
+    # Per-town image-writer threads. Town02 is captured last, which makes it the natural place to
+    # use the threaded writer: every town before it was captured inline, and keeping one long run
+    # on a single code path is worth more than the speed. 0 writes inline.
+    [hashtable]$SaveWorkersPerTown = @{ "Town02" = 4 },
+    [int]$DefaultSaveWorkers = 0
 )
 
 $total = $Towns.Count * $Weathers.Count
@@ -56,6 +61,8 @@ foreach ($town in $Towns) {
         $out = Join-Path (Join-Path $OutRoot $town) $weather
         $cameras = $DefaultCameras
         if ($CamerasPerTown.ContainsKey($town)) { $cameras = $CamerasPerTown[$town] }
+        $saveWorkers = $DefaultSaveWorkers
+        if ($SaveWorkersPerTown.ContainsKey($town)) { $saveWorkers = $SaveWorkersPerTown[$town] }
         Write-Host "=== [$n/$total] $town / $weather : target $FramesPerWeather frames -> $out ==="
         # A town/weather pair that fails outright must not take the rest of the queue with it:
         # every pair is resumable, so the next pass picks up whatever this one missed.
@@ -64,7 +71,7 @@ foreach ($town in $Towns) {
                 -Town $town -Weather $weather -Frames $FramesPerWeather `
                 -Width $Width -Height $Height -Out $out -MaxAttempts $MaxAttemptsPerRun `
                 -Traffic $Traffic -Walkers $Walkers `
-                -Cameras $cameras
+                -Cameras $cameras -SaveWorkers $saveWorkers
         } catch {
             Write-Host "[queue] $town / $weather failed: $($_.Exception.Message) - continuing."
         }
