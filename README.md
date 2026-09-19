@@ -29,7 +29,7 @@ Shared per frame:
 | Folder | Contents |
 | --- | --- |
 | `lidar/` | Full sweep in world coordinates, `.npy` of `(x, y, z, intensity)` |
-| `metadata/` | JSON: weather parameters, camera intrinsics and transforms, scene seed |
+| `metadata/` | JSON: weather parameters, per-camera intrinsics and transforms, scene seed, ego state and lead-vehicle ground truth |
 | `segments.csv` | Continuous-segment index (see [Segments](#segments)) |
 
 Depth is stored in centimetres rather than millimetres so that values up to 655 m fit in 16 bits;
@@ -64,6 +64,41 @@ python scripts/view_depth.py <folder> --all          # a whole folder
 
 `semantic_label/` is raw class ids (0-22) in every channel, so it looks almost black too - that is
 the label map, not a picture. `confidence/` is a mask, so it is black with white LiDAR scan lines.
+
+## Cameras
+
+Adver-City's four-camera rig (`front`, `right`, `left`, `back`) at 100 deg, plus an optional
+`front_narrow` at **50 deg** on the same mount as `front`. Select them with `--cameras`; the
+default is the four.
+
+The narrow camera exists because field of view, not resolution, decides whether a distant vehicle
+is measurable. At 960 px wide the 100 deg rig resolves 9.6 px/deg, so a 1.5 m car at 80 m is 8 px
+tall and one pixel of edge error is +-10.6 m of range. At 50 deg the same car is 19 px and one
+pixel is +-4.1 m. Supplying K at evaluation time does not recover that difference - the detail was
+never sampled. Each camera carries its own intrinsics, and the LiDAR is projected with the K of the
+camera it is being projected into.
+
+## Lead-vehicle ground truth
+
+Every frame records what a following-distance task needs, alongside the depth:
+
+```json
+"sim_time_s": 412.35,
+"ego": {"speed_mps": 8.19, "yaw_rate_deg_s": -0.00},
+"lead_vehicle": {
+  "actor_id": 149, "type_id": "vehicle.mini.cooper_s",
+  "gap_m": 39.32, "centre_distance_m": 43.67, "lateral_offset_m": 0.00,
+  "lead_speed_mps": 0.90, "closing_speed_mps": 7.30, "ttc_s": 5.39,
+  "in_ego_path": true
+}
+```
+
+`gap_m` is bumper-to-bumper along the ego's forward axis, not centre-to-centre. The lead is found
+by walking the lane graph ahead rather than by a lateral distance test, because on a curve the
+vehicle straight ahead is not the one being followed; `in_ego_path` records whether the lane graph
+confirmed it, or whether it was matched by the lateral fallback. Each camera also stores
+`lead_vehicle_box`, the lead's 2D box in that view, so depth error can be scored on the followed
+vehicle rather than averaged over road and sky.
 
 ## Weather presets
 

@@ -27,7 +27,12 @@ param(
     [string]$OutRoot = "$PSScriptRoot\..\dataset",
     [int]$MaxAttemptsPerRun = 100,
     [int]$Traffic = 25,
-    [int]$Walkers = 10
+    [int]$Walkers = 10,
+    # Town04 is the only highway town in training, so it also records the 50 deg forward
+    # camera: long-range depth is what a following-distance task leans on, and the 100 deg
+    # surround rig cannot resolve a lead vehicle at that range. Elsewhere four cameras suffice.
+    [hashtable]$CamerasPerTown = @{ "Town04" = "front,right,left,back,front_narrow" },
+    [string]$DefaultCameras = "front,right,left,back"
 )
 
 $total = $Towns.Count * $Weathers.Count
@@ -36,11 +41,14 @@ foreach ($town in $Towns) {
     foreach ($weather in $Weathers) {
         $n++
         $out = Join-Path (Join-Path $OutRoot $town) $weather
+        $cameras = $DefaultCameras
+        if ($CamerasPerTown.ContainsKey($town)) { $cameras = $CamerasPerTown[$town] }
         Write-Host "=== [$n/$total] $town / $weather : target $FramesPerWeather frames -> $out ==="
         & "$PSScriptRoot\run_supervised_capture.ps1" `
             -Town $town -Weather $weather -Frames $FramesPerWeather `
             -Width $Width -Height $Height -Out $out -MaxAttempts $MaxAttemptsPerRun `
-            -Traffic $Traffic -Walkers $Walkers
+            -Traffic $Traffic -Walkers $Walkers `
+            -Cameras $cameras
     }
 }
 

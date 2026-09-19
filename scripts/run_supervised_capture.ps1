@@ -15,6 +15,10 @@ param(
     # rig; 25 has been stable.
     [int]$Traffic = 25,
     [int]$Walkers = 10,
+    # Which cameras to record. front_narrow is the 50 deg forward camera: at 960 px wide it
+    # resolves 19 px/deg against the 100 deg rig's 9.6, the difference between a lead vehicle
+    # at 80 m being 19 px tall and 8 px tall. Extra frames, so it is opt-in per town.
+    [string]$Cameras = "front,right,left,back",
     # Restart if no frame is written for this long. Generous: map loading, traffic spawning and the
     # warm-up ticks take well over a minute before the first frame of an attempt lands.
     [int]$NoProgressSeconds = 240,
@@ -90,6 +94,7 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         "--frames", $Frames,
         "--width", $Width, "--height", $Height,
         "--traffic", $Traffic, "--walkers", $Walkers,
+        "--cameras", $Cameras,
         "--out", "`"$Out`""
     ) -join " "
 

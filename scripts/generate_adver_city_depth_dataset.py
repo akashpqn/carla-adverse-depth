@@ -53,6 +53,12 @@ DYNAMIC_LABELS = {PEDESTRIAN_LABEL, VEHICLE_LABEL, DYNAMIC_LABEL}
 # traffic). This is our own deliberate deviation for data quality, not part of their methodology.
 CAMERA_RIG = [
     {"name": "front", "position": [0.7, 0.0, 1.75, 0.0]},
+    # Narrow forward camera, off by default (opt in with --cameras ...,front_narrow). The 100 deg
+    # rig above is a surround rig: at 960 px wide it resolves ~9.6 px/deg, so a car at 80 m is 8 px
+    # tall and one pixel of edge uncertainty is +-10 m of range - unusable for anything that needs
+    # the distance to a lead vehicle. Production ACC cameras look through ~50 deg, which at the same
+    # width gives ~19 px/deg. Same mount point as "front", so both see the identical scene.
+    {"name": "front_narrow", "position": [0.7, 0.0, 1.75, 0.0], "fov": 50.0},
     {"name": "right", "position": [-0.28, 0.65, 1.52, 100.0]},
     {"name": "left", "position": [-0.28, -0.65, 1.52, -100.0]},
     {"name": "back", "position": [-2.42, 0.0, 1.10, 180.0]},
@@ -646,6 +652,119 @@ def spawn_walkers(carla, world, count, near_location=None, near_radius=None):
     return walkers, controllers
 
 
+def ego_kinematics(ego):
+    """Ego state an ACC controller needs: forward speed and yaw rate."""
+    v = ego.get_velocity()
+    w = ego.get_angular_velocity()
+    return {
+        "speed_mps": round(float(math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)), 3),
+        "yaw_rate_deg_s": round(float(w.z), 3),
+    }
+
+
+def lane_path_ahead(carla, carla_map, ego, distance=150.0, step=2.0):
+    """(road_id, lane_id) of every lane segment the ego is about to drive through.
+
+    A lead vehicle is the one in the ego's *path*, which on a curve is not the one straight
+    ahead: a purely lateral test loses the lead car through every bend and picks up parked cars
+    on the outside of the curve instead. Following the lane graph keeps the right target.
+    """
+    wp = carla_map.get_waypoint(ego.get_transform().location, project_to_road=True,
+                                lane_type=carla.LaneType.Driving)
+    keys = set()
+    travelled = 0.0
+    while wp is not None and travelled < distance:
+        keys.add((wp.road_id, wp.lane_id))
+        nxt = wp.next(step)
+        if not nxt:
+            break
+        wp = nxt[0]
+        travelled += step
+    return keys
+
+
+def find_lead_vehicle(carla, world, carla_map, ego, max_distance=150.0, half_lane=1.75):
+    """The closest vehicle ahead in the ego's own path, with the quantities ACC is scored on.
+
+    Gap is bumper-to-bumper along the ego's forward axis, not centre-to-centre: a controller
+    holding a 2 m centre distance has already crashed. Closing speed is positive when the gap
+    is shrinking, and time-to-collision is only defined while it is.
+    """
+    ego_tf = ego.get_transform()
+    inv = np.array(ego_tf.get_inverse_matrix(), dtype=np.float64)
+    fwd = ego_tf.get_forward_vector()
+    ego_v = ego.get_velocity()
+    ego_speed_f = ego_v.x * fwd.x + ego_v.y * fwd.y + ego_v.z * fwd.z
+    path = lane_path_ahead(carla, carla_map, ego, max_distance)
+
+    best = None
+    for other in world.get_actors().filter("vehicle.*"):
+        if other.id == ego.id:
+            continue
+        loc = other.get_transform().location
+        local = np.dot(inv, np.array([loc.x, loc.y, loc.z, 1.0]))
+        forward, lateral = float(local[0]), float(local[1])
+        if forward <= 0.0 or forward > max_distance:
+            continue
+        wp = carla_map.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
+        in_path = wp is not None and (wp.road_id, wp.lane_id) in path
+        if not in_path and abs(lateral) > half_lane:
+            continue
+        gap = forward - float(ego.bounding_box.extent.x) - float(other.bounding_box.extent.x)
+        if best is not None and gap >= best["gap_m"]:
+            continue
+        ov = other.get_velocity()
+        other_speed_f = ov.x * fwd.x + ov.y * fwd.y + ov.z * fwd.z
+        closing = float(ego_speed_f - other_speed_f)
+        best = {
+            "actor_id": int(other.id),
+            "type_id": str(other.type_id),
+            "gap_m": round(float(gap), 3),
+            "centre_distance_m": round(float(forward), 3),
+            "lateral_offset_m": round(float(lateral), 3),
+            "lead_speed_mps": round(float(math.sqrt(ov.x ** 2 + ov.y ** 2 + ov.z ** 2)), 3),
+            "closing_speed_mps": round(closing, 3),
+            "ttc_s": round(float(gap / closing), 3) if closing > 0.1 and gap > 0 else None,
+            "in_ego_path": bool(in_path),
+        }
+    return best
+
+
+def project_actor_box(actor, camera_actor, k, width, height):
+    """2D box of an actor in one camera, or None when it is behind or off frame.
+
+    Scoring ACC on whole-frame AbsRel hides the failure that matters: a model can be excellent
+    on road and sky and still be metres wrong on the one vehicle being followed. This box is
+    what restricts the metric to that vehicle.
+    """
+    bb = actor.bounding_box
+    tf = actor.get_transform()
+    actor_to_world = np.array(tf.get_matrix(), dtype=np.float64)
+    world_to_cam = np.array(camera_actor.get_transform().get_inverse_matrix(), dtype=np.float64)
+    ex, ey, ez = bb.extent.x, bb.extent.y, bb.extent.z
+    us, vs = [], []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                local = np.array([bb.location.x + sx * ex, bb.location.y + sy * ey,
+                                  bb.location.z + sz * ez, 1.0])
+                world = np.dot(actor_to_world, local)
+                cam = np.dot(world_to_cam, world)
+                point = np.array([cam[1], -cam[2], cam[0]])
+                if point[2] <= 0.1:
+                    continue
+                uv = np.dot(k, point)
+                us.append(float(uv[0] / uv[2]))
+                vs.append(float(uv[1] / uv[2]))
+    if len(us) < 4:
+        return None
+    x0, y0 = max(0.0, min(us)), max(0.0, min(vs))
+    x1, y1 = min(width - 1.0, max(us)), min(height - 1.0, max(vs))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return [round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1)]
+
+
 def move_spectator(carla, world, ego):
     transform = ego.get_transform()
     forward = transform.rotation.get_forward_vector()
@@ -687,7 +806,8 @@ def main():
         "--cameras",
         default="front,right,left,back",
         type=parse_camera_names,
-        help="comma-separated subset of Adver-City's 4-camera rig: front,right,left,back",
+        help="comma-separated subset of the rig: front,right,left,back (Adver-City's four) plus "
+        "front_narrow, a 50 deg forward camera at the same mount as front",
     )
     parser.add_argument("--traffic", default=40, type=int)
     parser.add_argument("--walkers", default=25, type=int)
@@ -705,6 +825,8 @@ def main():
                         help="metres the ego must travel between saved frames (skips near-duplicates)")
     parser.add_argument("--max-stall-ticks", default=300, type=int,
                         help="end the run if the ego stays within --min-move for this many ticks")
+    parser.add_argument("--lead-max-distance", default=150.0, type=float,
+                        help="how far ahead to look for the lead vehicle when logging ACC ground truth")
     parser.add_argument("--max-missed-ticks", default=40, type=int,
                         help="end the run if this many consecutive ticks deliver no sensor data, which "
                         "means the simulator has stopped rendering even though it still answers RPC")
@@ -900,27 +1022,29 @@ def main():
             name = cam["name"]
             cam_tf = spawn_point_estimation(carla, cam["position"])
 
+            cam_fov = cam.get("fov", args.fov)
+
             rgb = world.spawn_actor(
-                build_camera_bp(bp_lib, "sensor.camera.rgb", args.width, args.height, args.fov, sensor_tick, CAMERA_PARAMS),
+                build_camera_bp(bp_lib, "sensor.camera.rgb", args.width, args.height, cam_fov, sensor_tick, CAMERA_PARAMS),
                 cam_tf,
                 attach_to=ego,
             )
             semantic = world.spawn_actor(
-                build_camera_bp(bp_lib, "sensor.camera.semantic_segmentation", args.width, args.height, args.fov, sensor_tick),
+                build_camera_bp(bp_lib, "sensor.camera.semantic_segmentation", args.width, args.height, cam_fov, sensor_tick),
                 cam_tf,
                 attach_to=ego,
             )
             depth_camera = None
             if args.save_carla_depth:
                 depth_camera = world.spawn_actor(
-                    build_camera_bp(bp_lib, "sensor.camera.depth", args.width, args.height, args.fov, sensor_tick),
+                    build_camera_bp(bp_lib, "sensor.camera.depth", args.width, args.height, cam_fov, sensor_tick),
                     cam_tf,
                     attach_to=ego,
                 )
                 sensors.append(depth_camera)
 
             sensors.extend([rgb, semantic])
-            cameras[name] = {"rgb": rgb, "semantic": semantic, "depth": depth_camera}
+            cameras[name] = {"rgb": rgb, "semantic": semantic, "depth": depth_camera, "fov": cam_fov}
 
         for sensor_name, sensor in [("lidar", lidar)] + [
             ("%s_%s" % (kind, name), cameras[name][kind])
@@ -934,16 +1058,25 @@ def main():
             queues[sensor_name] = q
         print("  [setup] %d sensors listening" % len(queues))
 
-        k = camera_intrinsics(args.width, args.height, args.fov)
-        intrinsics = {
-            "fx": float(k[0, 0]),
-            "fy": float(k[1, 1]),
-            "cx": float(k[0, 2]),
-            "cy": float(k[1, 2]),
-            "width": args.width,
-            "height": args.height,
-            "fov": args.fov,
-        }
+        def intrinsics_for(fov):
+            m = camera_intrinsics(args.width, args.height, fov)
+            return m, {
+                "fx": float(m[0, 0]),
+                "fy": float(m[1, 1]),
+                "cx": float(m[0, 2]),
+                "cy": float(m[1, 2]),
+                "width": args.width,
+                "height": args.height,
+                "fov": fov,
+            }
+
+        # Cameras may differ in field of view (see CAMERA_RIG), so each carries its own K - one
+        # shared matrix would mis-project the LiDAR into any camera that is not args.fov wide.
+        camera_k = {}
+        camera_intrinsics_meta = {}
+        for cam_name in cameras:
+            camera_k[cam_name], camera_intrinsics_meta[cam_name] = intrinsics_for(cameras[cam_name]["fov"])
+        k, intrinsics = intrinsics_for(args.fov)
 
         for _ in range(args.warmup):
             world.tick()
@@ -986,6 +1119,7 @@ def main():
         last_saved_pos = None
         stall_ticks = 0
         missed_streak = 0
+        lead_logging_warned = False
         while saved < remaining:
             frame = world.tick()
 
@@ -1048,8 +1182,21 @@ def main():
             if args.save_ply:
                 save_ply(os.path.join(args.out, "lidar", stem + ".ply"), world_points, intensity)
 
+            # Auxiliary ACC ground truth: useful, but never worth losing a frame - or a run - over,
+            # so a failure here degrades to "no lead recorded" instead of propagating.
+            try:
+                lead = find_lead_vehicle(carla, world, world.get_map(), ego,
+                                         max_distance=args.lead_max_distance)
+            except Exception as exc:
+                if not lead_logging_warned:
+                    print("WARNING: lead-vehicle logging failed (%s) - continuing without it." % exc)
+                    lead_logging_warned = True
+                lead = None
             frame_metadata = {
                 "frame": int(frame),
+                "sim_time_s": round(float(world.get_snapshot().timestamp.elapsed_seconds), 4),
+                "ego": ego_kinematics(ego),
+                "lead_vehicle": lead,
                 "weather": args.weather,
                 "weather_parameters": weather_params,
                 "map": world.get_map().name,
@@ -1078,14 +1225,15 @@ def main():
                 dynamic_or_sky = sky_mask | np.isin(labels, list(DYNAMIC_LABELS))
 
                 sweep_buffer.append(world_points)
-                sparse_depth = project_world_points(world_points, rgb_camera, k, args.width, args.height, args.max_depth)
+                cam_k = camera_k[name]
+                sparse_depth = project_world_points(world_points, rgb_camera, cam_k, args.width, args.height, args.max_depth)
 
                 if len(sweep_buffer) > 1:
                     all_world_points = np.concatenate(list(sweep_buffer), axis=1)
                 else:
                     all_world_points = world_points
                 semi_dense_depth = project_world_points(
-                    all_world_points, rgb_camera, k, args.width, args.height, args.max_depth
+                    all_world_points, rgb_camera, cam_k, args.width, args.height, args.max_depth
                 )
 
                 sparse_depth[sky_mask] = 0.0
@@ -1123,8 +1271,19 @@ def main():
                         "carla_depth_view" if args.depth_view else None, args.depth_view_max,
                     )
 
+                lead_box = None
+                if lead is not None:
+                    try:
+                        lead_actor = world.get_actor(lead["actor_id"])
+                        if lead_actor is not None:
+                            lead_box = project_actor_box(lead_actor, rgb_camera, cam_k,
+                                                         args.width, args.height)
+                    except Exception:
+                        lead_box = None
                 frame_metadata["cameras"][name] = {
                     "camera_transform": rgb_camera.get_transform().__str__(),
+                    "intrinsics": camera_intrinsics_meta[name],
+                    "lead_vehicle_box": lead_box,
                     "sparse_valid_pixels": int(np.count_nonzero(sparse_depth)),
                     "semi_dense_valid_pixels": int(np.count_nonzero(semi_dense_depth)),
                 }
