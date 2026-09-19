@@ -132,10 +132,26 @@ ground truth are left untouched, so inputs are degraded while targets stay clean
 | `towns/Town10HD.ps1` | Town10HD | Dense urban downtown |
 | `towns/Town07.ps1` | Town07 | Rural roads |
 | `towns/Town04.ps1` | Town04 | Highway loop with an underpass |
-| `towns/Town06.ps1` | Town06 | Multi-lane highways, open horizons |
+| `towns/Town06.ps1` | Town06 | Multi-lane highways, open horizons - **held out**, see below |
 
-**Town03 and Town05 are deliberately not captured**, so they remain an unseen validation split.
-Town04's underpass provides covered-road driving, which otherwise exists only in the held-out Town03.
+**Town03, Town05 and Town06 are deliberately not captured**, so they remain unseen validation
+splits. Town04's underpass provides covered-road driving, which otherwise exists only in the
+held-out Town03.
+
+Town06 is held out specifically for following-distance evaluation. Measured from the OpenDRIVE
+networks, only two towns carry freeway-class road:
+
+| Town | Road total | >=55 mph | >=65 mph | Max lanes per direction |
+| --- | --- | --- | --- | --- |
+| Town06 | 8.5 km | 4.1 km | **3.9 km** | **5** |
+| Town04 | 10.8 km | 4.7 km | **3.6 km** | 4 |
+| Town05 | 9.2 km | 3.4 km | 1.4 km | 3 |
+| Town03 | 11.3 km | 3.6 km | 0 | 2 |
+| Town10HD, Town07, Town01, Town02 | - | **0** | **0** | 1-2 |
+
+Training on Town06 would leave no unseen map with a highway on it. Town04 stays in training so the
+model still sees freeway geometry, and it is the town that records the 50 deg `front_narrow`
+camera; `towns/Town06.ps1` remains here for capturing the held-out set separately.
 
 Town02 is also excluded: with the four-camera rig it crashed the simulator during warm-up on every
 attempt, including with zero traffic and zero pedestrians, while other towns ran the same

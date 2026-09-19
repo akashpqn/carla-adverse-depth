@@ -4,12 +4,17 @@
 # pair. Output: <OutRoot>\<Town>\<weather>\...
 #
 # Town03 and Town05 are deliberately excluded so they stay available as an unseen validation split.
+# Town06 is excluded too, and for a sharper reason: it is the held-out set for following-distance
+# evaluation. Measured from the OpenDRIVE networks, only Town04 (3.6 km) and Town06 (3.9 km) carry
+# road posted at 65 mph or above, and Town06 has the wider carriageway (5 lanes vs 4) and the
+# entrances and exits that produce cut-ins. Training on it would leave nothing unseen with a
+# highway in it - Town10HD and Town07 have no road above 50 mph at all.
 # Town04 is included for its underpass/overpass (the closest thing to tunnel driving outside Town03).
 # Town01 was captured earlier with the older pipeline and is not re-run here.
 #
 # Everything is resumable: re-running this skips any town/weather pair that already has its frames.
 param(
-    [string[]]$Towns = @("Town10HD", "Town07", "Town04", "Town06"),
+    [string[]]$Towns = @("Town10HD", "Town07", "Town04"),
     # Town02 is left out: with the 4-camera rig it crashed CARLA during warmup on every attempt,
     # even with zero traffic and zero walkers, while Town06 ran the same config cleanly.
     [string[]]$Weathers = @(
