@@ -125,6 +125,13 @@ Beyond CARLA's own weather, rain presets also receive a **lens-droplet overlay**
 RGB only: water beads refract a blurred, inverted view of the scene. Depth, semantic and LiDAR
 ground truth are left untouched, so inputs are degraded while targets stay clean.
 
+## The captured data
+
+The dataset this code produced is published on Kaggle, CC BY 4.0:
+**[brsimps/carla-adverse-weather-depth](https://www.kaggle.com/datasets/brsimps/carla-adverse-weather-depth)**
+- 10,300 frames, 54.7 GB, one archive per town and weather so a single condition can be downloaded
+without the rest.
+
 ## What was captured
 
 10,300 frames, every town/weather pair complete at its target. Each frame carries four camera views
