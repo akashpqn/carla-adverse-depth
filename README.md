@@ -125,17 +125,24 @@ Beyond CARLA's own weather, rain presets also receive a **lens-droplet overlay**
 RGB only: water beads refract a blurred, inverted view of the scene. Depth, semantic and LiDAR
 ground truth are left untouched, so inputs are degraded while targets stay clean.
 
-## Towns
+## What was captured
 
-| Script | Town | Character |
-| --- | --- | --- |
-| `towns/Town10HD.ps1` | Town10HD | Dense urban downtown |
-| `towns/Town07.ps1` | Town07 | Rural roads |
-| `towns/Town04.ps1` | Town04 | Highway loop with an underpass |
-| `towns/Town06.ps1` | Town06 | Multi-lane highways, open horizons - **held out**, see below |
-| - | Town03 | Roundabout, dense junctions, the only tunnel - **held out** |
-| - | Town01 | Basic T-junction town |
-| - | Town02 | Smaller variant of Town01 - captured on a lighter actor load, see below |
+10,300 frames, every town/weather pair complete at its target. Each frame carries four camera views
+(five where noted), three depth ground truths per view, and per-frame ego and lead-vehicle state.
+
+| Split | Town | Character | Cameras | Frames |
+| --- | --- | --- | --- | --- |
+| training | Town10HD | Dense urban downtown | 4 | 1,820 |
+| training | Town07 | Rural roads, narrow lanes | 4 | 1,820 |
+| training | Town04 | Highway loop with an underpass | **5** | 1,820 |
+| training | Town01 | Basic T-junction town | **5** | 1,820 |
+| training | Town02 | Smaller variant of Town01 | **5** | 1,820 |
+| **held out** | Town05 | Squared grid, multiple lanes per direction | 4 | 600 |
+| **held out** | Town03 | Roundabout, dense junctions, the only tunnel | 4 | 600 |
+| *not captured* | Town06 | Multi-lane highways | - | reserved |
+
+Training goes to `dataset/` (9,100 frames at 182 per weather), held-out towns to `dataset_val/`
+(1,200 frames at 60 per weather). The five-camera towns add `front_narrow`; see [Cameras](#cameras).
 
 **Town03, Town05 and Town06 never enter training.** Town03 and Town05 are captured into the
 separate `dataset_val/` root as held-out validation; Town06 is not captured by these scripts at
